@@ -37,6 +37,10 @@ python3 -m tests.fake_zammad 8099       # fake Zammad for manual runs (token: te
 
 Runs on Python ≥ 3.9 (RHEL 9 system Python). Dependencies: `requests`, `PyYAML`.
 
+## License
+
+[MIT](LICENSE)
+
 ## Layout
 
 ```
