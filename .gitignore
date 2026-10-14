@@ -1,0 +1,15 @@
+# data – never commit
+archive/
+inspect-out/
+meili_data/
+config.yaml
+*.env
+web/config.js
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+build/

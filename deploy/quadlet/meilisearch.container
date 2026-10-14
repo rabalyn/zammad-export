@@ -1,0 +1,21 @@
+[Unit]
+Description=Meilisearch for the Zammad ticket archive
+
+[Container]
+# Pinned on purpose. Upgrade = change tag, delete meili_data, meili-setup + index --reset (ADR 0007).
+Image=docker.io/getmeili/meilisearch:v1.54.3
+ContainerName=meilisearch
+Network=zammad-archive.network
+# Only localhost: the indexer on the host talks to it, browsers go through Caddy.
+PublishPort=127.0.0.1:7700:7700
+Volume=%h/zammad-archive/meili_data:/meili_data:Z
+Environment=MEILI_ENV=production
+Environment=MEILI_NO_ANALYTICS=true
+Secret=meili_master_key,type=env,target=MEILI_MASTER_KEY
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

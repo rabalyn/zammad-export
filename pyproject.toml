@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zammad-archive"
+version = "0.1.0"
+description = "Export Zammad tickets into a privacy-reduced archive and search them with Meilisearch"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.25",
+    "PyYAML>=5.4",
+]
+
+[project.scripts]
+zammad-archive = "zammad_archive.cli:main"
+
+[tool.setuptools]
+packages = ["zammad_archive"]

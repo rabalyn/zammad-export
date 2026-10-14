@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ticket-Archiv</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Ticket-Archiv</h1>
+    <form id="search-form" class="searchbar" role="search">
+      <input id="q" type="search" placeholder="Suchen: Fehlermeldung, Ticketnummer, Dateiname …"
+             autocomplete="off" autofocus aria-label="Suche">
+      <select id="sort" aria-label="Sortierung">
+        <option value="">Relevanz</option>
+        <option value="created_ts:desc">Neueste zuerst</option>
+        <option value="created_ts:asc">Älteste zuerst</option>
+      </select>
+    </form>
+  </header>
+
+  <main class="layout">
+    <aside id="facets" class="facets" aria-label="Filter">
+      <details open><summary>Filter</summary>
+        <div id="active-filters" class="active-filters"></div>
+        <div id="facet-list"></div>
+      </details>
+    </aside>
+
+    <section class="results" aria-live="polite">
+      <p id="status" class="status"></p>
+      <ol id="hits" class="hits"></ol>
+      <nav class="pager">
+        <button id="prev" type="button">← zurück</button>
+        <span id="page"></span>
+        <button id="next" type="button">weiter →</button>
+      </nav>
+    </section>
+
+    <article id="detail" class="detail" hidden>
+      <button id="close-detail" type="button" class="close" aria-label="Schließen">✕</button>
+      <div id="detail-body"></div>
+    </article>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

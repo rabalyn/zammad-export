@@ -1,0 +1,61 @@
+# Web front for the ticket archive (docs/ADR/0009-search-ui-and-access-control.md)
+# Mounted read-only into the archive-web container as /etc/caddy/Caddyfile.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	encode zstd gzip
+
+	# --- Access control: pick one (setup guide, step 8) ------------------------
+	# a) basic auth: create hashes with
+	#    podman run --rm docker.io/library/caddy:2.10 caddy hash-password --plaintext 'secret'
+	# basic_auth {
+	# 	team $2a$14$REPLACE_WITH_HASH
+	# }
+	# b) only reachable from the company reverse proxy: publish the port on the
+	#    proxy-facing interface only, and let the proxy handle SSO.
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		-Server
+	}
+
+	# Meilisearch: only the search endpoint of the "tickets" index is reachable.
+	@meili_search {
+		method POST
+		path /meili/indexes/tickets/search
+	}
+	handle @meili_search {
+		uri strip_prefix /meili
+		reverse_proxy meilisearch:7700
+	}
+	handle /meili/* {
+		respond 403
+	}
+
+	# Archive files: ticket.json for the detail view, attachments as downloads.
+	handle_path /files/* {
+		@hidden path_regexp hidden (^|/)\.
+		respond @hidden 404
+
+		root * /srv/archive/tickets
+		@download not path */ticket.json
+		header @download {
+			Content-Disposition attachment
+			Content-Security-Policy "default-src 'none'; sandbox"
+		}
+		file_server
+	}
+
+	# Static search UI.
+	handle {
+		root * /srv/web
+		header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		header /config.js Cache-Control no-store
+		file_server
+	}
+}

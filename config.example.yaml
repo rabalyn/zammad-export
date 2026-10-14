@@ -1,0 +1,93 @@
+# zammad-archive configuration. Copy to config.yaml and adapt.
+# Secrets are NOT stored here, only the names of the environment variables holding them.
+# Relative paths are relative to this file.
+
+zammad:
+  url: https://zammad.example.com
+  token_env: ZAMMAD_TOKEN         # env var with the API token (Profile -> Token Access)
+  verify_tls: true                # true | false | /path/to/company-ca.pem
+  timeout: 60
+  per_page: 100
+  fetch_tags: true                # one extra API call per ticket
+
+# Which tickets are worth keeping. Zammad search syntax, same as the search box in Zammad.
+# Examples: title:*VPN*   tags:netzwerk   group.name:"2nd Level"   state.name:closed
+#           created_at:[2026-01-01 TO 2026-06-30]   article.body:"Zertifikat abgelaufen"
+# The name becomes a "Thema" filter in the search UI.
+queries:
+  - name: vpn
+    query: 'title:*VPN* OR tags:vpn'
+  - name: second-level-closed
+    query: 'group.name:"2nd Level" AND state.name:closed'
+
+export:
+  archive_dir: ./archive
+  incremental_days: 7             # nightly runs look at tickets updated in the last N days
+  delay_seconds: 0.0              # pause between tickets, if the Zammad admins ask for it
+
+# Everything below is applied BEFORE anything is written (docs/ADR/0005-privacy-middleware.md).
+# Use `zammad-archive inspect` to see what each setting does to your real tickets.
+privacy:
+  secret_env: ZAMMAD_ARCHIVE_SECRET   # HMAC key for stable pseudonyms
+
+  # Allowlists: fields not listed here are dropped. See inspect report for what exists.
+  ticket_fields: [id, number, title, state, priority, group, owner, customer, organization,
+                  created_at, updated_at, close_at, tags]
+  article_fields: [id, created_at, sender, type, internal, from, to, cc, subject, body, attachments]
+
+  skip_internal_articles: false   # internal notes often contain the actual solution
+  skip_system_articles: true      # auto-replies, triggers
+  skip_article_types: []          # e.g. [phone, sms]
+
+  # Mail domains of colleagues. They are shown according to agent_display, everyone
+  # else becomes Person-xxxxxxxx.
+  internal_domains: [example.com]
+  agent_display: localpart        # login (full address) | localpart (j.doe) | pseudonym (Agent-xxxx)
+  pseudonymise_customers: true
+
+  replace_name_parts: true        # also replace "Mustermann" alone, not only "Max Mustermann"
+  name_part_min_length: 4
+  # name_part_ignore: [...]       # words never treated as name parts (defaults in config.py)
+
+  strip_quoted_replies: true      # quoted mails are archived as their own articles anyway
+  # quote_markers: [...]          # regexes, one per line start (defaults in config.py)
+  cut_signatures: true
+  signature_keep_lines: 1         # keep the greeting line ("Viele Grüße"), drop the rest
+  # signature_markers: [...]
+
+  scrub:
+    emails: pseudonym             # pseudonym | redact | keep (for addresses only found in text)
+    phones: true
+    ibans: true
+    custom_patterns: []
+    #  - name: customer-number
+    #    pattern: '\bKD-\d{6}\b'
+    #    replacement: '[KUNDENNR]'
+    #  - name: street
+    #    pattern: '\b[A-ZÄÖÜ][a-zäöüß]+(straße|str\.|weg|allee|platz)\s+\d+[a-z]?\b'
+    #    replacement: '[ADRESSE]'
+    #    ignore_case: true
+
+  max_body_chars: 20000
+
+attachments:
+  enabled: true
+  max_size_mb: 10
+  allowed_extensions: [txt, log, csv, json, xml, yaml, yml, conf, cfg, ini, pdf, png, jpg, jpeg]
+  skip_inline: true               # signature logos, embedded images
+  extract_text: false             # ADR 0010; plain text files work without Tika
+  tika_url: http://127.0.0.1:9998
+  extract_max_chars: 50000
+
+meilisearch:
+  url: http://127.0.0.1:7700
+  key_env: MEILI_MASTER_KEY
+  index: tickets                  # if you change this, change deploy/Caddyfile too
+  web_config_js: ./app/web/config.js
+  public_meili_path: /meili
+  public_files_path: /files
+
+# Your own last middleware step: "file.py:function" (relative to this file) or "module:function".
+# function(bundle, raw) -> bundle or None (None = do not archive this ticket).
+# See examples/custom_middleware.py.
+custom_middleware: null
