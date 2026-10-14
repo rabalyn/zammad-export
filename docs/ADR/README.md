@@ -26,9 +26,10 @@ searchable, privacy-reduced copy of the tickets that matter to us.
 | [0005](0005-privacy-middleware.md) | Privacy middleware: allowlist, pseudonymisation, scrubbing | accepted |
 | [0006](0006-inspect-live-data-first.md) | Inspect live data before deciding what to keep | accepted |
 | [0007](0007-search-engine-meilisearch.md) | Search engine: Meilisearch | accepted |
-| [0008](0008-deployment-rootless-podman-rhel9.md) | Deployment: rootless Podman (Quadlet) on RHEL 9 | accepted |
+| [0008](0008-deployment-rootless-podman-rhel9.md) | Deployment: rootless Podman (Quadlet) on RHEL 9 | superseded by 0011 |
 | [0009](0009-search-ui-and-access-control.md) | Search UI and access control | accepted |
 | [0010](0010-attachment-text-extraction.md) | Attachment text extraction (optional, Apache Tika) | proposed |
+| [0011](0011-deployment-podman-compose.md) | Deployment: everything with podman-compose | accepted |
 
 New ADRs: copy [template.md](template.md), take the next number, add a row here.
 
@@ -52,9 +53,9 @@ Phases are done in order. Phase 1 must finish before any real data is stored lon
 - [ ] Delete the inspect output (`rm -rf inspect-out/`). It contains raw personal data.
 - [ ] Record the final field choice as a short "Decision update" in ADR 0005.
 
-### Phase 2 – Deploy on RHEL 9 (ADR 0008)
-- [ ] Service user with linger, Podman Quadlets for Meilisearch + Caddy.
-- [ ] Exporter in a Python venv, secrets in an env file (mode 600).
+### Phase 2 – Deploy on RHEL 9 (ADR 0011)
+- [ ] Service user with linger, `podman-compose up -d` for Meilisearch + Caddy.
+- [ ] Exporter image built from the Containerfile, secrets in `.env` (mode 600).
 - [ ] `zammad-archive meili-setup`, then the first full export + index.
 - [ ] systemd user timer: nightly export + index.
 
@@ -66,5 +67,6 @@ Phases are done in order. Phase 1 must finish before any real data is stored lon
 ### Phase 4 – Operate
 - [ ] Back up `archive/` and the pseudonym secret. Meilisearch data needs no backup (rebuildable).
 - [ ] Check the timer weekly at first (`journalctl --user -u zammad-archive`).
+- [ ] Try changes locally first against the dev Zammad (`dev/zammad-dev.sh up`, see `dev/README.md`).
 - [ ] Define how long the archive itself keeps tickets (open question in ADR 0005).
 - [ ] Optional: attachment full-text search with Tika (ADR 0010).

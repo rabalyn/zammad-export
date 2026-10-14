@@ -1,5 +1,0 @@
-[Unit]
-Description=Private network for the Zammad ticket archive
-
-[Network]
-NetworkName=zammad-archive

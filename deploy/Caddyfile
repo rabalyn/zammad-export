@@ -55,6 +55,8 @@
 	handle {
 		root * /srv/web
 		header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+		# revalidate on every load (cheap 304 via ETag), so UI updates reach everyone at once
+		header Cache-Control no-cache
 		header /config.js Cache-Control no-store
 		file_server
 	}

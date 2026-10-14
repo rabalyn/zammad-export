@@ -17,6 +17,11 @@ from .zammad import ZammadClient, ZammadError
 
 log = logging.getLogger(__name__)
 
+REGISTRY_FILE = ".people-registry.json"
+# structural values in ticket.json that never hold free text
+NO_RESCRUB = {"id", "number", "created_at", "updated_at", "close_at", "sender", "type", "internal",
+              "content_type", "size", "path", "text_path", "archive", "schema_version"}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -61,7 +66,7 @@ class Exporter:
         self.archive = archive
         self.att_cfg = cfg["attachments"]
         self.stats = {"found": 0, "written": 0, "unchanged": 0, "dropped": 0, "failed": 0,
-                      "attachments_downloaded": 0, "attachments_reused": 0}
+                      "attachments_downloaded": 0, "attachments_reused": 0, "rescrubbed": 0}
 
     def run(self, full: bool = False, dry_run: bool = False, query_names: Optional[List[str]] = None) -> Dict[str, int]:
         queries = select_queries(self.cfg["queries"], query_names)
@@ -80,8 +85,23 @@ class Exporter:
                 log.error("ticket %s failed: %s", ticket.get("number"), exc)
             if delay:
                 time.sleep(delay)
+        if not dry_run:
+            self.finish_registry()
         log.info("export done: %s", ", ".join(f"{k}={v}" for k, v in self.stats.items()))
         return self.stats
+
+    def finish_registry(self) -> None:
+        """Persist new known people; then re-scrub the archive, because tickets written
+        earlier (in this run or before) may mention a person only known since now."""
+        reg = self.mw.registry
+        if reg is None or reg.path is None or not (reg.added or reg.pending_rescrub):
+            return
+        log.info("people registry: %d new entries, %d total – re-scrubbing the archive", reg.added, len(reg))
+        reg.pending_rescrub = True
+        reg.save()
+        self.stats["rescrubbed"] = rescrub_archive(self.archive, self.mw)
+        reg.pending_rescrub = False
+        reg.save()
 
     def export_one(self, ticket: Dict[str, Any], names: Set[str], full: bool, dry_run: bool) -> None:
         number = ticket.get("number") or ticket.get("id")
@@ -160,6 +180,61 @@ class Exporter:
         if text:
             (staging / txt_rel).write_text(scrub(text), encoding="utf-8")
             att["text_path"] = txt_rel.as_posix()
+
+
+def _rescrub_value(value: Any, mw: Middleware) -> Any:
+    if isinstance(value, str):
+        return mw.scrub_known_people(value)
+    if isinstance(value, list):
+        return [_rescrub_value(v, mw) for v in value]
+    if isinstance(value, dict):
+        return {k: v if k in NO_RESCRUB else _rescrub_value(v, mw) for k, v in value.items()}
+    return value
+
+
+def rescrub_archive(archive: Archive, mw: Middleware) -> int:
+    """Apply the people registry to every archived ticket; returns the number of changed tickets."""
+    changed = 0
+    for ticket_dir, data in archive.iter_tickets():
+        new = dict(data, ticket=_rescrub_value(data.get("ticket"), mw),
+                   articles=_rescrub_value(data.get("articles"), mw))
+        dirty = new != data
+        for article in new.get("articles") or []:
+            for att in article.get("attachments") or []:
+                dirty |= _rescrub_attachment(ticket_dir, att, mw)
+        if dirty:
+            Archive.write_json(ticket_dir / "ticket.json", new)
+            changed += 1
+            log.info("ticket %s re-scrubbed (people from other tickets)", ticket_dir.name)
+    return changed
+
+
+def _rescrub_attachment(ticket_dir: Path, att: Dict[str, Any], mw: Middleware) -> bool:
+    """File names on disk carry the attachment name, extracted text the content."""
+    dirty = False
+    if att.get("path"):
+        rel = Path(att["path"])
+        new_rel = rel.with_name(safe_filename(mw.scrub_known_people(rel.name)))
+        if new_rel != rel:
+            if (ticket_dir / rel).is_file():
+                os.replace(ticket_dir / rel, ticket_dir / new_rel)
+            att["path"] = new_rel.as_posix()
+            if att.get("text_path"):
+                new_txt = new_rel.with_name(new_rel.name + ".txt")
+                if (ticket_dir / att["text_path"]).is_file():
+                    os.replace(ticket_dir / att["text_path"], ticket_dir / new_txt)
+                att["text_path"] = new_txt.as_posix()
+            dirty = True
+    if att.get("text_path") and (ticket_dir / att["text_path"]).is_file():
+        txt = ticket_dir / att["text_path"]
+        text = txt.read_text(encoding="utf-8")
+        new_text = mw.scrub_known_people(text)
+        if new_text != text:
+            tmp = txt.with_name(txt.name + ".tmp")
+            tmp.write_text(new_text, encoding="utf-8")
+            os.replace(tmp, txt)
+            dirty = True  # rewrite ticket.json too, so the indexer picks the text up
+    return dirty
 
 
 def _same_fs(a: Path, b: Path) -> bool:

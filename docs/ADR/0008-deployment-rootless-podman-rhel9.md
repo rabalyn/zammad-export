@@ -1,6 +1,6 @@
 # 0008 – Deployment: rootless Podman (Quadlet) on RHEL 9
 
-- Status: accepted
+- Status: superseded by [0011](0011-deployment-podman-compose.md) (everything runs with podman-compose)
 - Date: 2026-10-14
 
 ## Context

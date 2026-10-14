@@ -11,7 +11,7 @@ from typing import List, Optional
 from . import __version__
 from .archive import Archive
 from .config import ConfigError, env_secret, load_config, require_zammad, resolve_path
-from .exporter import Exporter
+from .exporter import REGISTRY_FILE, Exporter
 from .indexer import Meili, MeiliError, run_index, write_web_config
 from .inspector import run_inspect
 from .middleware import Middleware
@@ -29,10 +29,12 @@ def _client(cfg) -> ZammadClient:
 def _middleware(cfg, allow_ephemeral: bool = False) -> Middleware:
     name = cfg["privacy"]["secret_env"]
     secret = env_secret(name, not allow_ephemeral, "pseudonym secret")
+    registry = resolve_path(cfg, cfg["export"]["archive_dir"]) / REGISTRY_FILE
     if not secret:
         log.warning("%s not set: using a random secret, pseudonyms will differ from the real archive", name)
         secret = secrets.token_hex(32)
-    return Middleware(cfg, secret)
+        registry = None  # its hashes only match with the real secret
+    return Middleware(cfg, secret, registry_path=registry)
 
 
 def _archive(cfg) -> Archive:

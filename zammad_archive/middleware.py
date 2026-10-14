@@ -16,11 +16,13 @@ import hashlib
 import hmac
 import importlib
 import importlib.util
+import json
 import logging
+import os
 import re
 from email.utils import getaddresses
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Pattern, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Pattern, Set, Tuple
 
 from . import textconv
 
@@ -35,7 +37,7 @@ PHONE_RE = re.compile(
     r"(?:[ ./-]?\d{2,}){1,4}"
     r"(?![\w/:-]|[.,]\d)")
 IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,3})?\b")
-PSEUDONYM_RE = re.compile(r"\b(?:Person|Org|Agent)-[0-9a-f]{8}\b")
+PSEUDONYM_RE = re.compile(r"\b(?:Person|Org|Agent|Domain)-[0-9a-f]{8}\b")
 
 PERSON_TICKET_FIELDS = {"customer", "created_by", "updated_by"}
 AGENT_TICKET_FIELDS = {"owner"}
@@ -52,6 +54,121 @@ class Pseudonymiser:
     def token(self, kind: str, value: str) -> str:
         digest = hmac.new(self.key, _norm(value).encode("utf-8"), hashlib.sha256).hexdigest()
         return f"{kind}-{digest[:8]}"
+
+    def digest(self, value: str) -> str:
+        """Registry key: a separate HMAC domain, so keys never equal a pseudonym's hex."""
+        return hmac.new(self.key, b"people-registry\0" + _norm(value).encode("utf-8"),
+                        hashlib.sha256).hexdigest()[:32]
+
+
+# word = letters/digits; up to 4 words joined by a space, ", ", "-", "." or "_" form one candidate
+REGISTRY_WORD_RE = re.compile(r"[^\W_]+")
+REGISTRY_SEP_RE = re.compile(r"\s+|,\s*|[-._]")
+REGISTRY_MAX_WORDS = 4
+
+
+class PeopleRegistry:
+    """External people known from *any* ticket, stored without clear text (ADR 0005).
+
+    Maps HMAC(name / name part / mail address / org / domain) -> pseudonym. Text is
+    scrubbed by hashing every word and short word sequence the same way and looking it up.
+    Without the secret the file reveals nothing but the number of entries.
+    """
+
+    VERSION = 1
+
+    def __init__(self, pseudo: Pseudonymiser, path: Optional[Path] = None) -> None:
+        self.pseudo = pseudo
+        self.path = path
+        self.entries: Dict[str, str] = {}
+        self.added = 0  # new or changed entries since load
+        self.pending_rescrub = False  # saved before the archive re-scrub, cleared after it
+        self._max_words = 1
+        if path is not None and path.is_file():
+            with path.open(encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.entries = dict(data.get("entries") or {})
+            self._max_words = int(data.get("words_per_term") or REGISTRY_MAX_WORDS)
+            self.pending_rescrub = bool(data.get("pending_rescrub"))
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def add(self, term: str, display: str) -> None:
+        key = self.pseudo.digest(term)
+        old = self.entries.get(key)
+        if old == display or old == "[NAME]":
+            return
+        if old is not None and "@" not in term:
+            display = "[NAME]"  # same name part for two different people
+        self.entries[key] = display
+        self.added += 1
+        words = len(REGISTRY_WORD_RE.findall(term))
+        self._max_words = max(self._max_words, min(words, REGISTRY_MAX_WORDS))
+
+    def lookup(self, term: str) -> Optional[str]:
+        return self.entries.get(self.pseudo.digest(term)) if self.entries else None
+
+    def save(self) -> None:
+        if self.path is None:
+            return
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump({"version": self.VERSION, "hash": "hmac-sha256/128", "words_per_term": self._max_words,
+                       "pending_rescrub": self.pending_rescrub,
+                       "entries": dict(sorted(self.entries.items()))}, fh, indent=0)
+            fh.write("\n")
+        os.replace(tmp, self.path)
+        self.added = 0
+
+    def matches(self, text: str, min_length: int, ignore: Set[str]) -> Iterator[Tuple[int, int, str]]:
+        """(start, end, pseudonym) of known people in text, longest match first, no overlaps."""
+        if not self.entries or not text:
+            return
+        # never look into pseudonyms that are already there ("Person-1a2b3c4d")
+        masked = [m.span() for m in PSEUDONYM_RE.finditer(text)]
+        words, k = [], 0
+        for m in REGISTRY_WORD_RE.finditer(text):
+            while k < len(masked) and masked[k][1] <= m.start():
+                k += 1
+            if k == len(masked) or m.start() < masked[k][0]:
+                words.append(m)
+        i = 0
+        while i < len(words):
+            hit = None
+            for n in range(min(self._max_words, len(words) - i), 0, -1):
+                group = words[i:i + n]
+                if any(not REGISTRY_SEP_RE.fullmatch(text[a.end():b.start()])
+                       for a, b in zip(group, group[1:])):
+                    continue
+                start, end = group[0].start(), group[-1].end()
+                if n == 1:
+                    word = group[0].group(0).lower()
+                    if len(word) < min_length or word in ignore or word.isdigit():
+                        continue
+                    candidates = [word]
+                else:
+                    # "Doe, John" / "kunde.de" as written, and "Thomas_Becker" as "thomas becker"
+                    candidates = [text[start:end], " ".join(w.group(0) for w in group)]
+                for cand in candidates:
+                    shown = self.lookup(cand)
+                    if shown is not None:
+                        hit = (start, end, shown, n)
+                        break
+                if hit:
+                    break
+            if hit:
+                yield hit[0], hit[1], hit[2]
+                i += hit[3]
+            else:
+                i += 1
+
+    def scrub(self, text: str, min_length: int, ignore: Set[str]) -> str:
+        out, pos = [], 0
+        for start, end, shown in self.matches(text, min_length, ignore):
+            out += [text[pos:start], shown]
+            pos = end
+        return "".join(out) + text[pos:] if out else text
 
 
 class TicketContext:
@@ -75,6 +192,8 @@ class TicketContext:
         self.terms[key] = display
         if external:
             self.external_terms.add(key)
+            if self.mw.registry is not None:
+                self.mw.registry.add(key, display)
         self._email_re = self._name_re = None
 
     def _name_parts(self, name: str) -> List[str]:
@@ -116,6 +235,7 @@ class TicketContext:
         """Register one person, return how they are shown in the archive."""
         email = (email or "").strip().lower()
         name = (name or "").strip().strip('"').strip()
+        name = re.sub(r"\s+via\s+.*$", "", name)  # Zammad: "Julia Agent via Support <support@…>"
         if not email and not name:
             return ""
         internal = force_internal or (bool(email) and self.is_internal(email))
@@ -133,6 +253,10 @@ class TicketContext:
         display = self.mw.pseudo.token("Person", email or name)
         if email:
             self._add_term(email, display, external=True)
+            # the customer's domain identifies the organisation too ("intranet.kunde.de")
+            domain = email.rsplit("@", 1)[-1]
+            if self.mw.privacy["scrub"].get("customer_domains", True) and domain not in self.mw.public_domains:
+                self._add_term(domain, self.mw.pseudo.token("Domain", domain), external=True)
         self._register_names(name, display, external=True)
         if email and not name:
             local = email.split("@", 1)[0]
@@ -190,11 +314,15 @@ class TicketContext:
             return text
         if self._email_re is None and self._name_re is None and self.terms:
             self._compile()
+        # order matters: whole mail addresses first, so that a name or domain inside an
+        # address ("hans.dampf@kunde.de") is not replaced on its own and hides the address
         if self._email_re is not None:
             text = self._email_re.sub(lambda m: self.terms[_norm(m.group(1))], text)
+        text = self.mw.scrub_emails(text, self)
         if self._name_re is not None:
             text = self._name_re.sub(lambda m: self.terms.get(_norm(m.group(1)), m.group(1)), text)
-        return self.mw.regex_scrub(text, self)
+        text = self.mw.scrub_known_people(text)
+        return self.mw.scrub_patterns(text)
 
 
 class Result:
@@ -207,11 +335,16 @@ class Result:
 
 
 class Middleware:
-    def __init__(self, cfg: Dict[str, Any], secret: str) -> None:
+    def __init__(self, cfg: Dict[str, Any], secret: str, registry_path: Optional[Path] = None) -> None:
         self.privacy = cfg["privacy"]
         self.att = cfg["attachments"]
         self.pseudo = Pseudonymiser(secret)
+        # people from other tickets; in memory only unless a path is given (export)
+        self.registry: Optional[PeopleRegistry] = (
+            PeopleRegistry(self.pseudo, registry_path) if self.privacy.get("cross_ticket_names", True) else None)
         self.internal_domains = [d.lower().lstrip("@") for d in self.privacy["internal_domains"]]
+        # freemail domains say nothing about a customer, replacing them would only hurt readability
+        self.public_domains = {d.lower() for d in self.privacy["scrub"].get("public_domains") or []}
         self.name_ignore = {w.lower() for w in self.privacy["name_part_ignore"]} | {
             "herr", "frau", "prof", "dr", "mr", "mrs", "ms", "dear", "hallo", "hello"}
         self.quote_markers = textconv.compile_markers(self.privacy["quote_markers"])
@@ -224,16 +357,30 @@ class Middleware:
         self.custom_hook = load_hook(cfg.get("custom_middleware"), cfg.get("_config_dir", "."))
 
     # -- text ---------------------------------------------------------------
-    def regex_scrub(self, text: str, ctx: TicketContext) -> str:
+    def scrub_emails(self, text: str, ctx: TicketContext) -> str:
+        """Mail addresses that are not in any header (those are handled by TicketContext)."""
+        mode = self.privacy["scrub"]["emails"]
+        if mode == "keep":
+            return text
+
+        def _email(m: "re.Match[str]") -> str:
+            addr = m.group(0)
+            if ctx.is_internal(addr):
+                return ctx._agent_display(addr.lower())
+            known = self.registry.lookup(addr) if self.registry is not None else None
+            if known is not None:
+                return known
+            return self.pseudo.token("Person", addr) if mode == "pseudonym" else "[EMAIL]"
+        return EMAIL_RE.sub(_email, text)
+
+    def scrub_known_people(self, text: str) -> str:
+        """Names / addresses known from the headers of *other* tickets (cross_ticket_names)."""
+        if self.registry is None:
+            return text
+        return self.registry.scrub(text, int(self.privacy["name_part_min_length"]), self.name_ignore)
+
+    def scrub_patterns(self, text: str) -> str:
         scrub = self.privacy["scrub"]
-        mode = scrub["emails"]
-        if mode != "keep":
-            def _email(m: "re.Match[str]") -> str:
-                addr = m.group(0)
-                if ctx.is_internal(addr):
-                    return ctx._agent_display(addr.lower())
-                return self.pseudo.token("Person", addr) if mode == "pseudonym" else "[EMAIL]"
-            text = EMAIL_RE.sub(_email, text)
         if scrub["ibans"]:
             text = IBAN_RE.sub("[IBAN]", text)
         if scrub["phones"]:
@@ -309,6 +456,9 @@ class Middleware:
             headers[art.get("id")] = {
                 f: ctx.add_header(art.get(f), force_internal=(f == "from" and art.get("sender") == "Agent"))
                 for f in ("from", "to", "cc", "reply_to")}
+            # agent mails go out as the shared mailbox; created_by names the colleague who wrote it
+            if art.get("sender") == "Agent" and art.get("created_by"):
+                headers[art.get("id")]["from"] = ctx.add_login(art["created_by"])
             for f in ("created_by", "updated_by"):
                 if f in p["article_fields"]:
                     headers[art.get("id")][f] = ctx.add_header(art.get(f))

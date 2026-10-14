@@ -6,7 +6,7 @@ from pathlib import Path
 
 from zammad_archive.archive import Archive
 from zammad_archive.config import DEFAULTS, _deep_merge
-from zammad_archive.exporter import Exporter
+from zammad_archive.exporter import REGISTRY_FILE, Exporter, rescrub_archive
 from zammad_archive.indexer import build_document
 from zammad_archive.middleware import Middleware
 from zammad_archive.zammad import ZammadClient, ZammadError
@@ -41,7 +41,8 @@ class ExportTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def exporter(self):
-        return Exporter(self.cfg, self.client, Middleware(self.cfg, "secret"), self.archive)
+        mw = Middleware(self.cfg, "secret", registry_path=self.archive.root / REGISTRY_FILE)
+        return Exporter(self.cfg, self.client, mw, self.archive)
 
     def test_bad_token(self):
         with self.assertRaises(ZammadError):
@@ -76,6 +77,51 @@ class ExportTest(unittest.TestCase):
         finally:
             fz.TICKETS[1]["updated_at"] = "2026-04-03T09:30:00.000Z"
         self.assertEqual((stats["written"], stats["attachments_reused"], stats["attachments_downloaded"]), (1, 1, 0))
+
+    def test_people_from_later_tickets_are_rescrubbed(self):
+        # ticket 1 is exported first and mentions the customer of ticket 2 (exported last)
+        note = fz.ARTICLES[1][2]
+        old_body = note["body"]
+        note["body"] = "<p>Erika Musterfrau hat das gleiche Problem.</p>"
+        try:
+            stats = self.exporter().run(full=True)
+        finally:
+            note["body"] = old_body
+        self.assertGreaterEqual(stats["rescrubbed"], 1)
+        text = (self.archive.ticket_dir("26040210001") / "ticket.json").read_text().lower()
+        self.assertNotIn("musterfrau", text)
+        customer = self.archive.load("26040510002")["ticket"]["customer"]
+        self.assertIn(f"{customer.lower()} hat das gleiche problem", text)
+        registry = (self.archive.root / REGISTRY_FILE).read_text().lower()
+        for leak in ("musterfrau", "erika", "mustermann", "firma", "kunde"):
+            self.assertNotIn(leak, registry)
+        self.assertFalse(json.loads(registry)["pending_rescrub"])
+        # nothing new learned -> no second re-scrub
+        self.assertEqual(self.exporter().run(full=True)["rescrubbed"], 0)
+
+    def test_rescrub_renames_attachments(self):
+        d = self.archive.ticket_dir("1")
+        (d / "attachments").mkdir(parents=True)
+        (d / "attachments" / "5_6_Becker_log.txt").write_text("x")
+        (d / "attachments" / "5_6_Becker_log.txt.txt").write_text("Thomas Becker war hier")
+        Archive.write_json(d / "ticket.json", {"ticket": {"number": "1", "title": "Becker"}, "articles": [
+            {"id": 5, "created_at": "Becker", "attachments": [
+                {"id": 6, "filename": "Becker_log.txt", "path": "attachments/5_6_Becker_log.txt",
+                 "text_path": "attachments/5_6_Becker_log.txt.txt"}]}]})
+        mw = Middleware(self.cfg, "secret")
+        mw.registry.add("thomas becker", "Person-aaaaaaaa")
+        mw.registry.add("becker", "Person-aaaaaaaa")
+        self.assertEqual(rescrub_archive(self.archive, mw), 1)
+        data = self.archive.load("1")
+        att = data["articles"][0]["attachments"][0]
+        self.assertEqual(data["ticket"]["title"], "Person-aaaaaaaa")
+        self.assertEqual(data["articles"][0]["created_at"], "Becker")  # structural field untouched
+        self.assertEqual(att["filename"], "Person-aaaaaaaa_log.txt")
+        self.assertEqual(att["path"], "attachments/5_6_Person-aaaaaaaa_log.txt")
+        self.assertEqual((d / att["text_path"]).read_text(), "Person-aaaaaaaa war hier")
+        self.assertEqual(sorted(p.name for p in (d / "attachments").iterdir()),
+                         ["5_6_Person-aaaaaaaa_log.txt", "5_6_Person-aaaaaaaa_log.txt.txt"])
+        self.assertEqual(rescrub_archive(self.archive, mw), 0)
 
     def test_dry_run_writes_nothing(self):
         stats = self.exporter().run(full=True, dry_run=True)

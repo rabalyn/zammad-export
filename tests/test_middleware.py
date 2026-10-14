@@ -3,9 +3,10 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from zammad_archive.config import DEFAULTS, _deep_merge
-from zammad_archive.middleware import EMAIL_RE, IBAN_RE, PHONE_RE, Middleware
+from zammad_archive.middleware import EMAIL_RE, IBAN_RE, PHONE_RE, Middleware, PeopleRegistry, Pseudonymiser
 
 from . import fake_zammad as fz
 
@@ -68,6 +69,26 @@ class Pipeline(unittest.TestCase):
         self.assertTrue(b["ticket"]["owner"].startswith("Agent-"))
         self.assertNotIn("julia", dump(b).lower())
 
+    def test_customer_domain_in_text(self):
+        r = raw(1)
+        r["articles"][2]["body"] = "<p>intranet.kunde.de und mail.gmx.de, intern: wiki.example.com</p>"
+        r["articles"][2]["created_by"] = None
+        r["articles"].append({"id": 15, "sender": "Customer", "type": "email", "from": "x@gmx.de",
+                              "body": "hi", "content_type": "text/plain"})
+        body = self.mw.process(r).bundle["articles"][2]["body"]
+        self.assertRegex(body, r"^intranet\.Domain-[0-9a-f]{8} und mail\.gmx\.de, intern: wiki\.example\.com$")
+        body = make_mw(scrub={"customer_domains": False}).process(r).bundle["articles"][2]["body"]
+        self.assertIn("intranet.kunde.de", body)
+
+    def test_agent_mail_via_shared_mailbox(self):
+        r = raw(1)
+        r["articles"][1]["from"] = "Julia Agent via Support <support@example.com>"
+        r["articles"][1]["created_by"] = "p.netz@example.com"
+        b = self.mw.process(r).bundle
+        self.assertEqual(b["articles"][1]["from"], "p.netz")
+        b = make_mw(agent_display="login").process(raw(1)).bundle
+        self.assertEqual(b["articles"][1]["from"], "j.agent@example.com")
+
     def test_allowlist_and_article_rules(self):
         b = self.mw.process(raw(1)).bundle
         self.assertNotIn("custom_contract_no", b["ticket"])
@@ -110,6 +131,79 @@ class Pipeline(unittest.TestCase):
             mw = Middleware(cfg, "s")
             self.assertTrue(mw.process(raw(1)).bundle["ticket"]["hooked"])
             self.assertIsNone(mw.process(raw(2)).bundle)
+
+
+class CrossTicketNames(unittest.TestCase):
+    """People known from the headers of one ticket are replaced in every other ticket."""
+
+    def mention(self, body):
+        r = raw(2)
+        r["articles"][0]["body"] = body
+        return r
+
+    def test_name_from_other_ticket_is_replaced(self):
+        mw = make_mw()
+        customer = mw.process(raw(1)).bundle["ticket"]["customer"]
+        r = self.mention("Schreibrechte für Max Mustermann und mich, Mustermann weiß Bescheid. "
+                         "Mail an max.mustermann@kunde.de, Lisa Kollegin auch.")
+        body = mw.process(r).bundle["articles"][0]["body"]
+        for leak in ("max", "mustermann", "lisa", "kollegin", "kunde.de"):
+            self.assertNotIn(leak, body.lower())
+        self.assertTrue(body.startswith(f"Schreibrechte für {customer} und mich, {customer} weiß"), body)
+        self.assertIn(f"Mail an {customer},", body)
+        # the same text without the other ticket: the name stays (only known from ticket 1)
+        self.assertIn("Max Mustermann", make_mw().process(r).bundle["articles"][0]["body"])
+        mw = make_mw(cross_ticket_names=False)
+        mw.process(raw(1))
+        self.assertIsNone(mw.registry)
+        self.assertIn("Max Mustermann", mw.process(r).bundle["articles"][0]["body"])
+
+    def test_registry_file_has_no_clear_text_and_persists(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / ".people-registry.json"
+            cfg = _deep_merge(DEFAULTS, {"privacy": {"internal_domains": ["example.com"]}})
+            cfg["_config_dir"] = d
+            mw = Middleware(cfg, "secret", registry_path=path)
+            customer = mw.process(raw(1)).bundle["ticket"]["customer"]
+            mw.registry.save()
+            text = path.read_text(encoding="utf-8").lower()
+            for leak in ("max", "mustermann", "lisa", "kollegin", "kunde", "@", "partner"):
+                self.assertNotIn(leak, text)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIn(customer, data["entries"].values())
+            self.assertTrue(all(len(k) == 32 for k in data["entries"]))
+            self.assertFalse(any(k in v for k, v in data["entries"].items()))  # keys are no pseudonym hex
+            # a later run (new process) knows the person from the file alone
+            body = Middleware(cfg, "secret", registry_path=path).process(
+                self.mention("Bitte Mustermann fragen")).bundle["articles"][0]["body"]
+            self.assertEqual(body, f"Bitte {customer} fragen")
+            # another secret cannot use (or read) the registry
+            body = Middleware(cfg, "other", registry_path=path).process(
+                self.mention("Bitte Mustermann fragen")).bundle["articles"][0]["body"]
+            self.assertEqual(body, "Bitte Mustermann fragen")
+
+    def test_matching_rules(self):
+        mw = make_mw(name_part_ignore=["kunde"])
+        reg = mw.registry
+        reg.add("thomas becker", "Person-aaaaaaaa")
+        reg.add("becker", "Person-aaaaaaaa")
+        reg.add("doe, john", "Person-bbbbbbbb")
+        reg.add("kunde", "Person-cccccccc")  # e.g. registered before it was put on the ignore list
+        reg.add("ute", "Person-dddddddd")    # shorter than name_part_min_length
+        reg.add("kunde.de", "Domain-eeeeeeee")
+        scrub = mw.scrub_known_people
+        self.assertEqual(scrub("Thomas Becker, BECKER und Thomas_Becker.log"),
+                         "Person-aaaaaaaa, Person-aaaaaaaa und Person-aaaaaaaa.log")
+        self.assertEqual(scrub("Doe, John schrieb"), "Person-bbbbbbbb schrieb")
+        self.assertEqual(scrub("Kunde Ute auf intranet.kunde.de"), "Kunde Ute auf intranet.Domain-eeeeeeee")
+        self.assertEqual(scrub("Beckerstraße, Person-aaaaaaaa"), "Beckerstraße, Person-aaaaaaaa")
+
+    def test_same_name_part_for_two_people(self):
+        reg = PeopleRegistry(Pseudonymiser("s"))
+        reg.add("becker", "Person-aaaaaaaa")
+        reg.add("becker", "Person-bbbbbbbb")
+        reg.add("becker", "Person-aaaaaaaa")
+        self.assertEqual(reg.lookup("Becker"), "[NAME]")
 
 
 if __name__ == "__main__":

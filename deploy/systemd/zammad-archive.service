@@ -1,12 +1,9 @@
 [Unit]
 Description=Export Zammad tickets into the archive and update the search index
-Wants=meilisearch.service
-After=meilisearch.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=%h/zammad-archive
-EnvironmentFile=%h/.config/zammad-archive/env
-ExecStart=%h/zammad-archive/venv/bin/zammad-archive -c %h/zammad-archive/config.yaml run
+ExecStart=/usr/bin/podman-compose run --rm exporter run
 Nice=10
 TimeoutStartSec=6h

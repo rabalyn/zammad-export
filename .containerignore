@@ -1,0 +1,11 @@
+.git
+data
+local
+inspect-out
+config.yaml
+.env
+web
+tests
+docs
+deploy
+**/__pycache__

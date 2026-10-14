@@ -285,7 +285,12 @@
     $("status").textContent = "config.js fehlt oder ist unvollständig – `zammad-archive meili-setup` ausführen.";
     return;
   }
-  readHash();
-  search();
-  if (state.ticket) openTicket(state.ticket);
+  function fromHash() {
+    readHash();
+    search();
+    if (state.ticket) openTicket(state.ticket); else closeTicket();
+  }
+  // a pasted or edited link (#q=…) changes only the hash, the page does not reload
+  window.addEventListener("hashchange", fromHash);
+  fromHash();
 })();

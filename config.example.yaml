@@ -21,7 +21,7 @@ queries:
     query: 'group.name:"2nd Level" AND state.name:closed'
 
 export:
-  archive_dir: ./archive
+  archive_dir: ./data/archive
   incremental_days: 7             # nightly runs look at tickets updated in the last N days
   delay_seconds: 0.0              # pause between tickets, if the Zammad admins ask for it
 
@@ -48,6 +48,10 @@ privacy:
   replace_name_parts: true        # also replace "Mustermann" alone, not only "Max Mustermann"
   name_part_min_length: 4
   # name_part_ignore: [...]       # words never treated as name parts (defaults in config.py)
+  # Also replace people known from the headers of *other* tickets ("Schreibrechte für
+  # Thomas Becker" in a ticket Thomas never wrote to). Stored as HMAC hashes only in
+  # <archive_dir>/.people-registry.json (ADR 0005). Run `export --full` once after enabling.
+  cross_ticket_names: true
 
   strip_quoted_replies: true      # quoted mails are archived as their own articles anyway
   # quote_markers: [...]          # regexes, one per line start (defaults in config.py)
@@ -59,6 +63,8 @@ privacy:
     emails: pseudonym             # pseudonym | redact | keep (for addresses only found in text)
     phones: true
     ibans: true
+    customer_domains: true        # customer mail domains in text (intranet.kunde.de) -> Domain-xxxxxxxx
+    # public_domains: [...]       # freemail domains that are never replaced (defaults in config.py)
     custom_patterns: []
     #  - name: customer-number
     #    pattern: '\bKD-\d{6}\b'
@@ -80,10 +86,10 @@ attachments:
   extract_max_chars: 50000
 
 meilisearch:
-  url: http://127.0.0.1:7700
+  url: http://127.0.0.1:7700      # compose overrides this via MEILI_URL
   key_env: MEILI_MASTER_KEY
   index: tickets                  # if you change this, change deploy/Caddyfile too
-  web_config_js: ./app/web/config.js
+  web_config_js: ./web/config.js
   public_meili_path: /meili
   public_files_path: /files
 

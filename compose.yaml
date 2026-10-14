@@ -1,0 +1,56 @@
+# Zammad ticket archive – everything runs with podman-compose (docs/ADR/0011-deployment-podman-compose.md)
+#
+#   podman-compose up -d                          # meilisearch + web (search UI)
+#   podman-compose run --rm exporter check        # any zammad-archive command
+#   podman-compose run --rm exporter run          # export + index (what the nightly timer runs)
+#
+# Secrets come from .env next to this file (see deploy/env.example), settings from config.yaml.
+# Data lives in ./data (archive = source of truth, meili = disposable index).
+
+name: zammad-archive
+
+services:
+  meilisearch:
+    # Pinned on purpose. Upgrade = change tag, delete data/meili, meili-setup + index --reset (ADR 0007).
+    image: docker.io/getmeili/meilisearch:v1.54.3
+    restart: always
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?set MEILI_MASTER_KEY in .env}
+    volumes:
+      - ./data/meili:/meili_data:Z
+
+  web:
+    image: docker.io/library/caddy:2.10
+    restart: always
+    depends_on:
+      - meilisearch
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      # :z (shared label): the exporter container writes here, Caddy reads
+      - ./web:/srv/web:ro,z
+      - ./data/archive/tickets:/srv/archive/tickets:ro,z
+
+  exporter:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: localhost/zammad-archive:latest
+    # `up` runs `check` once and exits (a startup self-test); real work goes through `run`.
+    # No depends_on: podman-compose 1.x may start services out of order and then hang.
+    restart: "no"
+    environment:
+      ZAMMAD_TOKEN: ${ZAMMAD_TOKEN:-}
+      ZAMMAD_ARCHIVE_SECRET: ${ZAMMAD_ARCHIVE_SECRET:-}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-}
+      MEILI_URL: http://meilisearch:7700
+    working_dir: /work
+    volumes:
+      - ./config.yaml:/work/config.yaml:ro,Z
+      - ./data/archive:/work/data/archive:z
+      - ./web:/work/web:z
+      # inspect output and custom middleware files, if you use them
+      - ./local:/work/local:z

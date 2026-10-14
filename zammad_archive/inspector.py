@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from .archive import safe_dirname
 from .exporter import collect_tickets
-from .middleware import EMAIL_RE, PHONE_RE, PSEUDONYM_RE, Middleware
+from .middleware import EMAIL_RE, PHONE_RE, PSEUDONYM_RE, Middleware, PeopleRegistry
 from .zammad import ZammadClient
 
 log = logging.getLogger(__name__)
@@ -71,7 +71,8 @@ def render_text(bundle: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _leftovers(bundle: Dict[str, Any], external_terms: set) -> List[str]:
+def _leftovers(bundle: Dict[str, Any], external_terms: set, mw: Optional[Middleware] = None,
+               known: Optional[PeopleRegistry] = None) -> List[str]:
     texts = [str(bundle["ticket"].get("title") or "")]
     for a in bundle["articles"]:
         texts += [str(a.get(f) or "") for f in ("from", "to", "cc", "subject", "body")]
@@ -86,6 +87,10 @@ def _leftovers(bundle: Dict[str, Any], external_terms: set) -> List[str]:
     for term in sorted(external_terms):
         if "@" not in term and re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", lowered):
             found.append(f"name `{term}`")
+    # people known from the headers of other tickets (hashed registry, ADR 0005)
+    if mw is not None and known is not None:
+        for start, end, _ in known.matches(blob, int(mw.privacy["name_part_min_length"]), mw.name_ignore):
+            found.append(f"name from another ticket `{blob[start:end]}`")
     return found
 
 
@@ -109,6 +114,9 @@ def run_inspect(cfg: Dict[str, Any], client: ZammadClient, mw: Middleware, out: 
     leftovers: Dict[str, List[str]] = {}
     per_query: Counter = Counter()
 
+    raws: List[Any] = []
+    # everyone known from the archive's registry or any sampled ticket, also with cross_ticket_names off
+    known = mw.registry if mw.registry is not None else PeopleRegistry(mw.pseudo)
     for ticket, names in found.values():
         number = safe_dirname(ticket.get("number") or ticket.get("id"))
         for n in names:
@@ -131,6 +139,12 @@ def run_inspect(cfg: Dict[str, Any], client: ZammadClient, mw: Middleware, out: 
                 att_inline += disp.startswith("inline") or bool(prefs.get("Content-ID"))
                 att_kept += mw.keep_attachment(att)
 
+        ctx = mw.process(raw).ctx  # first pass: learn the people of all sampled tickets
+        for term in ctx.external_terms:
+            known.add(term, ctx.terms[term])
+        raws.append((number, raw))
+
+    for number, raw in raws:
         result = mw.process(raw)
         if result.bundle is None:
             (out / "preview" / f"{number}.txt").write_text("(dropped by middleware)\n", encoding="utf-8")
@@ -139,7 +153,7 @@ def run_inspect(cfg: Dict[str, Any], client: ZammadClient, mw: Middleware, out: 
         (out / "preview" / f"{number}.json").write_text(
             json.dumps(result.bundle, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         (out / "preview" / f"{number}.txt").write_text(render_text(result.bundle), encoding="utf-8")
-        left = _leftovers(result.bundle, result.ctx.external_terms)
+        left = _leftovers(result.bundle, result.ctx.external_terms, mw, known)
         if left:
             leftovers[number] = left
 
@@ -188,7 +202,8 @@ def run_inspect(cfg: Dict[str, Any], client: ZammadClient, mw: Middleware, out: 
         "## Possible personal data left after the middleware",
         "",
         "Check these in `preview/<number>.txt`. Mail addresses of colleagues (internal_domains) are",
-        "fine if you chose `agent_display: login`. Names are only detected if they appear in a mail header.",
+        "fine if you chose `agent_display: login`. Names are only detected if they appear in a mail header",
+        "(of this ticket, or of any ticket with `cross_ticket_names`).",
         "",
     ]
     if leftovers:

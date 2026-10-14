@@ -14,8 +14,8 @@ only the file names are searchable.
 - Plain text types (`text/*`, `.log`, `.txt`, `.csv`, `.json`, `.xml`, `.yaml`, `.conf`, `.ini`)
   are read directly, without Tika.
 - Everything else is sent to an Apache Tika server (`PUT /tika`, `Accept: text/plain`),
-  which can run as a third Quadlet container (`docker.io/apache/tika`, pinned tag,
-  127.0.0.1 only).
+  which can run as an extra service in `compose.yaml` (`docker.io/apache/tika`, pinned tag,
+  not published to the host).
 - The text is stored next to the file (`<file>.txt`), cut to `extract_max_chars`, and is
   indexed as `attachment_text`.
 - The regex scrubbing of ADR 0005 is applied to the extracted text before it is stored.

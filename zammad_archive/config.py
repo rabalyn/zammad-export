@@ -24,7 +24,7 @@ DEFAULTS: Dict[str, Any] = {
     },
     "queries": [],
     "export": {
-        "archive_dir": "./archive",
+        "archive_dir": "./data/archive",
         "incremental_days": 7,
         "delay_seconds": 0.0,
     },
@@ -46,6 +46,7 @@ DEFAULTS: Dict[str, Any] = {
         "pseudonymise_customers": True,
         "replace_name_parts": True,
         "name_part_min_length": 4,
+        "cross_ticket_names": True,  # replace people known from other tickets too (hashed registry)
         "name_part_ignore": [
             "support", "team", "service", "info", "admin", "office", "helpdesk",
             "noreply", "no-reply", "kundenservice", "mail", "system", "zammad",
@@ -76,6 +77,13 @@ DEFAULTS: Dict[str, Any] = {
             "emails": "pseudonym",  # pseudonym | redact | keep
             "phones": True,
             "ibans": True,
+            "customer_domains": True,  # kunde.de in "intranet.kunde.de" -> Domain-xxxxxxxx
+            "public_domains": [
+                "gmail.com", "googlemail.com", "gmx.de", "gmx.net", "web.de", "t-online.de",
+                "outlook.com", "hotmail.com", "hotmail.de", "live.com", "yahoo.com", "yahoo.de",
+                "icloud.com", "me.com", "mailbox.org", "posteo.de", "aol.com", "freenet.de",
+                "proton.me", "protonmail.com",
+            ],
             "custom_patterns": [],  # [{name, pattern, replacement, ignore_case}]
         },
         "max_body_chars": 20000,
@@ -124,6 +132,9 @@ def load_config(path: str) -> Dict[str, Any]:
         raise ConfigError("config file must contain a YAML mapping")
     cfg = _deep_merge(DEFAULTS, user_cfg)
     cfg["_config_dir"] = str(p.resolve().parent)
+    # set by compose.yaml: inside the container Meilisearch is reachable by service name
+    if os.environ.get("MEILI_URL"):
+        cfg["meilisearch"]["url"] = os.environ["MEILI_URL"]
     _validate(cfg)
     return cfg
 
