@@ -11,7 +11,7 @@ from typing import List, Optional
 from . import __version__
 from .archive import Archive
 from .config import ConfigError, env_secret, load_config, require_zammad, resolve_path
-from .exporter import REGISTRY_FILE, Exporter
+from .exporter import REGISTRY_FILE, Exporter, prune_topics
 from .indexer import Meili, MeiliError, run_index, write_web_config
 from .inspector import run_inspect
 from .middleware import Middleware
@@ -102,6 +102,19 @@ def cmd_meili_setup(cfg, args) -> int:
     return 0
 
 
+def cmd_prune_topics(cfg, args) -> int:
+    names = [q["name"] for q in cfg["queries"]]
+    if not names:
+        raise ValueError("no queries configured – refusing to prune every topic")
+    stats = prune_topics(_archive(cfg), names, remove_orphans=args.remove_orphans, dry_run=args.dry_run)
+    print(" ".join(f"{k}={v}" for k, v in stats.items()) + (" (dry run, nothing written)" if args.dry_run else ""))
+    if not args.dry_run and stats["removed"]:
+        print("removed tickets are still in the search index: run `index --reset`")
+    elif not args.dry_run and stats["changed"]:
+        print("run `index` to update the search index")
+    return 0
+
+
 def cmd_run(cfg, args) -> int:
     args.dry_run = False
     args.query_name = None
@@ -140,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("meili-setup", help="create index + settings + search-only key, write web/config.js")
     p.add_argument("--web-config", help="where to write config.js (default meilisearch.web_config_js)")
     p.set_defaults(func=cmd_meili_setup)
+
+    p = sub.add_parser("prune-topics", help="drop query names no longer in the config from archived tickets")
+    p.add_argument("--dry-run", action="store_true", help="only report what would change")
+    p.add_argument("--remove-orphans", action="store_true",
+                   help="delete tickets that match no configured query from the archive")
+    p.set_defaults(func=cmd_prune_topics)
 
     p = sub.add_parser("run", help="export, then index (what the nightly timer runs)")
     p.add_argument("--full", action="store_true")

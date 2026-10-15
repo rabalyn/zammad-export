@@ -31,7 +31,7 @@ podman-compose run --rm exporter run --full
 
 Commands (`podman-compose run --rm exporter <command>`): `check`, `inspect`,
 `export [--full] [--dry-run] [--query-name N]`, `index [--all] [--reset]`, `meili-setup`,
-`run [--full]` (export + index, used by the timer).
+`prune-topics [--dry-run] [--remove-orphans]`, `run [--full]` (export + index, used by the timer).
 
 No real Zammad at hand? `dev/zammad-dev.sh up` starts a local one with dummy tickets.
 

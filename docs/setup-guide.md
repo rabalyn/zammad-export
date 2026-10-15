@@ -216,6 +216,17 @@ podman-compose up -d && za meili-setup && za index --reset
 
 `meili-setup` writes a new search key to `web/config.js`. Users only need to reload the page.
 
+**Changed or removed queries:** archived tickets keep every query name they ever matched, so a
+renamed or deleted query stays visible as a topic in the UI. Clean up with:
+
+```bash
+za prune-topics --dry-run    # report: changed tickets, orphans (match no configured query)
+za prune-topics              # drop unknown query names, then: za index
+```
+
+Orphans are kept by default. `--remove-orphans` deletes them from the archive, then run
+`za index --reset` so they leave the search index too.
+
 **Removing tickets from the archive** (e.g. a retention rule): delete their folders in
 `data/archive/tickets/`, then `za index --reset`. Plain `index` only adds and updates.
 Don't move or replace the whole `data/archive` folder while `web` runs: the container keeps

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from zammad_archive.archive import Archive
 from zammad_archive.config import DEFAULTS, _deep_merge
-from zammad_archive.exporter import REGISTRY_FILE, Exporter, rescrub_archive
+from zammad_archive.exporter import REGISTRY_FILE, Exporter, prune_topics, rescrub_archive
 from zammad_archive.indexer import build_document
 from zammad_archive.middleware import Middleware
 from zammad_archive.zammad import ZammadClient, ZammadError
@@ -127,6 +127,25 @@ class ExportTest(unittest.TestCase):
         stats = self.exporter().run(full=True, dry_run=True)
         self.assertEqual(stats["written"], 3)
         self.assertEqual(list(self.archive.tickets.iterdir()), [])
+
+    def test_prune_topics(self):
+        self.exporter().run(full=True)
+        orphans = [d.name for d, data in self.archive.iter_tickets()
+                   if data["archive"]["matched_queries"] == ["drucker"]]
+        self.assertTrue(orphans)
+
+        stats = prune_topics(self.archive, ["vpn"], dry_run=True)
+        self.assertEqual((stats["changed"], stats["orphans"], stats["removed"]), (1 + len(orphans), len(orphans), 0))
+        self.assertEqual(self.archive.load("26040710003")["archive"]["matched_queries"], ["drucker", "vpn"])
+
+        stats = prune_topics(self.archive, ["vpn"])
+        self.assertEqual(self.archive.load("26040710003")["archive"]["matched_queries"], ["vpn"])
+        self.assertEqual(self.archive.load(orphans[0])["archive"]["matched_queries"], [])
+
+        stats = prune_topics(self.archive, ["vpn"], remove_orphans=True)
+        self.assertEqual((stats["changed"], stats["removed"]), (0, len(orphans)))
+        self.assertIsNone(self.archive.load(orphans[0]))
+        self.assertIsNotNone(self.archive.load("26040210001"))
 
     def test_index_document(self):
         self.exporter().run(full=True)

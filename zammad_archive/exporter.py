@@ -209,6 +209,36 @@ def rescrub_archive(archive: Archive, mw: Middleware) -> int:
     return changed
 
 
+def prune_topics(archive: Archive, keep: Iterable[str], remove_orphans: bool = False,
+                 dry_run: bool = False) -> Dict[str, int]:
+    """Drop query names that are no longer configured from matched_queries.
+
+    Orphans (tickets left without any configured query) are kept unless remove_orphans is set."""
+    keep = set(keep)
+    stats = {"changed": 0, "orphans": 0, "removed": 0}
+    for ticket_dir, data in list(archive.iter_tickets()):
+        arch = data.setdefault("archive", {})
+        old = arch.get("matched_queries") or []
+        new = [name for name in old if name in keep]
+        if not new:
+            stats["orphans"] += 1
+            if remove_orphans:
+                log.info("ticket %s matches no configured query (%s)%s", ticket_dir.name,
+                         ", ".join(old) or "-", "" if dry_run else ", removed")
+                if not dry_run:
+                    shutil.rmtree(ticket_dir)
+                stats["removed"] += 1
+                continue
+            log.warning("ticket %s matches no configured query (%s), kept", ticket_dir.name, ", ".join(old) or "-")
+        if new != old:
+            stats["changed"] += 1
+            log.debug("ticket %s: %s -> %s", ticket_dir.name, old, new)
+            if not dry_run:
+                arch["matched_queries"] = new
+                Archive.write_json(ticket_dir / "ticket.json", data)
+    return stats
+
+
 def _rescrub_attachment(ticket_dir: Path, att: Dict[str, Any], mw: Middleware) -> bool:
     """File names on disk carry the attachment name, extracted text the content."""
     dirty = False
